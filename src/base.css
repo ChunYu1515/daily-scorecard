@@ -1,0 +1,12 @@
+/* 基本重設：讓按鈕、輸入框在各瀏覽器外觀一致 */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; border: 0 solid; }
+html { -webkit-text-size-adjust: 100%; }
+body { background: #F4F6F0; -webkit-font-smoothing: antialiased; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+button { background: transparent; font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+button:disabled { cursor: default; }
+input, textarea { font: inherit; color: inherit; }
+input[type="number"] { -moz-appearance: textfield; }
+ul, ol { list-style: none; }
+h1, h2 { font-size: inherit; font-weight: inherit; }
+table { border-collapse: collapse; }
+svg { display: inline-block; }
