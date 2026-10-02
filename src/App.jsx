@@ -400,7 +400,7 @@ function Today({ data, setData, today, onReview, onBody }) {
   const overdue = isToday ? pending.filter((x) => sortKey(x.p.time) <= nowH) : [];
   const lateIds = new Set(overdue.map((x) => x.h.id));
   const nextUp = pending.find((x) => sortKey(x.p.time) > nowH);
-  const needBody = isToday && wd === 0 && !(data.body || {})[mondayOf(today)];
+  const needBody = isToday && wd === 0 && !Object.keys(data.body || {}).some((k) => mondayOf(k) === mondayOf(today));
 
   let banner = null;
   if (isToday && items.length) {
@@ -928,11 +928,11 @@ function Trend({ title, unit, pts }) {
 
 function Body({ data, setData, today }) {
   const body = data.body || {};
-  const wk = mondayOf(today);
-  const cur = body[wk] || {};
+  const cur = body[today] || {};
   const [weight, setWeight] = useState(cur.weight ?? "");
   const [waist, setWaist] = useState(cur.waist ?? "");
   const [saved, setSaved] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(null);
   const list = Object.keys(body).sort().map((k) => body[k]);
   const short = (ds) => ds.slice(5).replace("-", "/");
 
@@ -942,7 +942,7 @@ function Body({ data, setData, today }) {
     if (!isNaN(w)) entry.weight = w;
     if (!isNaN(c)) entry.waist = c;
     if (entry.weight === undefined && entry.waist === undefined) return;
-    setData((d) => ({ ...d, body: { ...(d.body || {}), [wk]: entry } }));
+    setData((d) => ({ ...d, body: { ...(d.body || {}), [today]: entry } }));
     setSaved(true);
   };
 
@@ -958,8 +958,8 @@ function Body({ data, setData, today }) {
   return (
     <div>
       <div style={{ marginTop: 16, padding: 16, background: C.card, border: `1.5px solid ${C.line}`, borderRadius: 10 }}>
-        <div style={{ fontSize: 16, fontWeight: 700 }}>{cur.date ? "本週紀錄（可修改）" : "記錄本週身型"}</div>
-        <p style={{ fontSize: 13, color: C.pencil, marginTop: 4 }}>建議每週固定同一天早上起床、上完廁所後量，條件一致才看得出變化。</p>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>{cur.date ? "今天的紀錄（可修改）" : "記錄今天的身型"}</div>
+        <p style={{ fontSize: 13, color: C.pencil, marginTop: 4 }}>每一次紀錄都會保留；同一天記兩次會以最後一次為準。建議每週固定同一天早上量，條件一致才看得出變化。</p>
         <div style={{ display: "flex", gap: 12, marginTop: 10 }}>
           <label style={{ flex: 1 }}>
             <span style={{ fontSize: 14, fontWeight: 600 }}>體重（kg）</span>
@@ -991,6 +991,7 @@ function Body({ data, setData, today }) {
               <th style={{ padding: "6px 0", fontWeight: 600 }}>日期</th>
               <th style={{ padding: "6px 0", fontWeight: 600 }}>體重</th>
               <th style={{ padding: "6px 0", fontWeight: 600 }}>腰圍</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -999,6 +1000,18 @@ function Body({ data, setData, today }) {
                 <td style={{ padding: "8px 0" }}>{short(e.date)}</td>
                 <td>{e.weight !== undefined ? `${e.weight} kg` : "–"}</td>
                 <td>{e.waist !== undefined ? `${e.waist} cm` : "–"}</td>
+                <td style={{ textAlign: "right" }}>
+                  <button onClick={() => {
+                      if (confirmDel === e.date) {
+                        setData((d) => { const b = { ...(d.body || {}) }; delete b[e.date]; return { ...d, body: b }; });
+                        setConfirmDel(null);
+                        if (e.date === today) { setWeight(""); setWaist(""); }
+                      } else setConfirmDel(e.date);
+                    }}
+                    style={{ minHeight: 36, padding: "0 6px", fontSize: 13, color: C.warn, textDecoration: "underline" }}>
+                    {confirmDel === e.date ? "確認刪除" : "刪除"}
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -1139,7 +1152,13 @@ function normalize(raw, today) {
   for (const v of hist) for (const h of v.habits) if (!cats.includes(h.category)) cats.push(h.category);
   if (!cats.length) cats.push(...CATS);
   const moves = Object.fromEntries(Object.entries(obj(d.moves)).filter(([k, v]) => typeof v === "string" && k.includes("|")));
-  return { start, records: obj(d.records), reviews: obj(d.reviews), body: obj(d.body), planHistory: hist, cats, moves };
+  const body = {};
+  for (const [k, v] of Object.entries(obj(d.body))) {
+    const e = obj(v);
+    const date = typeof e.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(e.date) ? e.date : k;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) body[date] = { ...e, date };
+  }
+  return { start, records: obj(d.records), reviews: obj(d.reviews), body, planHistory: hist, cats, moves };
 }
 
 class Guard extends Component {
