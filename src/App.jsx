@@ -1,4 +1,4 @@
-import { useState, useEffect, Component } from "react";
+import { useState, useEffect, useRef, Component } from "react";
 
 const C = {
   paper: "#F4F6F0", card: "#FFFFFF", ink: "#18332C", green: "#2E6B4E",
@@ -85,7 +85,7 @@ function defaultHabits() {
         const lower = [1, 3, 5].includes(d);
         return { time: d <= 3 ? "20:30" : d === 5 ? "下午" : "上午", duration: 30, full: `30 分鐘（${lower ? "下半身＋核心" : "上半身＋核心"}）`, content: lower ? LOWER : UPPER };
       }) },
-    { id: "range", name: "高爾夫練習場", category: "高爾夫", min: "去練習場就算",
+    { id: "range", name: "高爾夫練習場", category: "高爾夫", min: "去練習場就算", flexible: true,
       schedule: every((d) => d === 4 ? { time: "下午", duration: 90, full: "一籃球＋本週重點", content: ["短鐵暖身 10 球", "練本週的一個重點，例如擊球穩定度", "最後十幾球模擬下場：每球換桿、定目標"] } : null) },
     { id: "putting", name: "推桿切桿", category: "高爾夫", min: "推桿 10 球",
       schedule: every((d) => {
@@ -129,6 +129,78 @@ function makePlanOn(history) {
     return (cache[ds] = hs);
   };
 }
+// 某天實際要做的項目：排定的（扣掉改走的）＋改過來的＋可調移項目的額外完成
+function makeDayFn(data) {
+  const planOn = makePlanOn(data.planHistory);
+  const moves = data.moves || {};
+  const inbound = {};
+  for (const [k, to] of Object.entries(moves)) {
+    const i = k.indexOf("|");
+    (inbound[to] || (inbound[to] = [])).push({ from: k.slice(0, i), id: k.slice(i + 1) });
+  }
+  const cache = {};
+  const fn = (ds) => {
+    if (cache[ds]) return cache[ds];
+    const wd = parse(ds).getDay();
+    const hs = planOn(ds);
+    const rec = data.records[ds] || {};
+    const items = [], away = [];
+    hs.forEach((h, i) => {
+      const p = h.schedule[wd];
+      if (!p) return;
+      const to = h.flexible ? moves[`${ds}|${h.id}`] : null;
+      if (to && to !== ds) away.push({ h, p, to });
+      else items.push({ h, p, kind: "plan", i });
+    });
+    for (const { from, id } of inbound[ds] || []) {
+      if (from === ds || items.some((x) => x.h.id === id)) continue;
+      const h = planOn(from).find((x) => x.id === id);
+      const p = h && h.flexible && h.schedule[parse(from).getDay()];
+      if (p) items.push({ h, p, kind: "moved", from, i: 100 });
+    }
+    hs.forEach((h, i) => {
+      if (!h.flexible || items.some((x) => x.h.id === h.id)) return;
+      const v = rec[h.id];
+      const p = h.schedule[WEEK.find((w) => h.schedule[w])] || { time: "", duration: "", full: "" };
+      if (v && v !== "rest") items.push({ h, p, kind: "extra", i: 200 + i });
+    });
+    items.sort((a, b) => sortKey(a.p.time) - sortKey(b.p.time) || a.i - b.i);
+    return (cache[ds] = { items, away, rec });
+  };
+  fn.planOn = planOn;
+  return fn;
+}
+
+// 可調移項目在某週的目標次數與完成次數
+function weekCount(id, dayFn, mon, start) {
+  let target = 0, done = 0;
+  for (let i = 0; i < 7; i++) {
+    const ds = addDays(mon, i);
+    if (ds < start) continue;
+    const { items, rec } = dayFn(ds);
+    const it = items.find((x) => x.h.id === id);
+    if (!it) continue;
+    const v = rec[id];
+    if (v === "rest") continue;
+    if (it.kind !== "extra") target++;
+    if (v) done++;
+  }
+  return { target, done };
+}
+
+// 可調移項目：連續達標幾週（漏一週不斷，連續漏兩週才重算）
+function flexStreak(id, dayFn, today, start) {
+  let streak = 0, misses = 0, mon = mondayOf(today);
+  for (let k = 0; k < 60; k++, mon = addDays(mon, -7)) {
+    if (addDays(mon, 6) < start) break;
+    const { target, done } = weekCount(id, dayFn, mon, start);
+    if (k === 0) { if (target && done >= target) streak++; continue; }
+    if (!target) continue;
+    if (done >= target) { streak++; misses = 0; } else { misses++; if (misses >= 2) break; }
+  }
+  return streak;
+}
+
 const currentHabits = (data) => data.planHistory[data.planHistory.length - 1].habits;
 function withHabits(data, habits, today) {
   const hist = [...data.planHistory];
@@ -141,7 +213,9 @@ function withHabits(data, habits, today) {
 function Mark({ v, size = 28 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 28 28" aria-hidden="true">
-      {v === "rest" ? (
+      {v === "moved" ? (
+        <text x="14" y="15" textAnchor="middle" dominantBaseline="middle" fontSize="16" fontWeight="700" fill={C.pencil}>→</text>
+      ) : v === "rest" ? (
         <circle cx="14" cy="14" r="12" fill={C.paper} stroke={C.pencil} strokeWidth="1.5" />
       ) : v === "part" ? (
         <circle cx="14" cy="14" r="12" fill="none" stroke={C.green} strokeWidth="2" strokeDasharray="4 3" />
@@ -178,40 +252,109 @@ const inputStyle = {
   border: `1.5px solid ${C.line}`, borderRadius: 6, background: C.card, color: C.ink,
 };
 
+// ---------- 獎勵：連續達成里程碑時灑彩帶 ----------
+const DAY_MILESTONES = [3, 14, 21, 50, 75, 100];
+const WEEK_MILESTONES = [2, 4, 8, 12, 26, 52];
+const isMilestone = (n, flexible) => (flexible ? WEEK_MILESTONES.includes(n) : DAY_MILESTONES.includes(n) || (n > 100 && n % 50 === 0));
+
+function Confetti({ onDone }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const cv = ref.current;
+    let ctx = null;
+    try { ctx = cv && cv.getContext && cv.getContext("2d"); } catch (e) { ctx = null; }
+    if (reduce || !ctx) { const t = setTimeout(onDone, 2500); return () => clearTimeout(t); }
+    const W = window.innerWidth, H = window.innerHeight, dpr = window.devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = H * dpr; ctx.scale(dpr, dpr);
+    const colors = [C.green, C.flag, "#B8860B", "#7FB89A", C.ink, "#F2D27A"];
+    const ps = Array.from({ length: 140 }, (_, i) => ({
+      x: W / 2 + (Math.random() - 0.5) * W * 0.4, y: H * 0.4,
+      vx: (Math.random() - 0.5) * 14, vy: -Math.random() * 14 - 6,
+      w: 6 + Math.random() * 6, h: 9 + Math.random() * 8,
+      r: Math.random() * 6.28, vr: (Math.random() - 0.5) * 0.3, c: colors[i % colors.length],
+    }));
+    let raf; const t0 = performance.now();
+    const tick = (t) => {
+      const el = t - t0;
+      ctx.clearRect(0, 0, W, H);
+      ctx.globalAlpha = el > 2000 ? Math.max(0, 1 - (el - 2000) / 600) : 1;
+      for (const p of ps) {
+        p.vy += 0.35; p.vx *= 0.99; p.x += p.vx; p.y += p.vy; p.r += p.vr;
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.r);
+        ctx.fillStyle = p.c; ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h * Math.abs(Math.cos(p.r)));
+        ctx.restore();
+      }
+      if (el < 2600) raf = requestAnimationFrame(tick); else onDone();
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  return <canvas ref={ref} aria-hidden="true" style={{ position: "fixed", inset: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 60 }} />;
+}
+
 // ---------- 今天 ----------
-function HabitRow({ h, p, value, onSet, streak, warn, late }) {
+function HabitRow({ h, p, value, onSet, streak, warn, late, kind, from, week, future, moveOpts, onMove }) {
+  const [open, setOpen] = useState(false);
   const done = value === "min" || value === "full";
   const rest = value === "rest";
+  const extra = kind === "extra";
   const bg = value === "full" ? "#FBF2D6" : done ? "#E6EFE9" : C.card;
   const btn = (on, color, textOn) => ({
     minWidth: 58, height: 44, padding: "0 10px", borderRadius: 10, fontSize: 15, fontWeight: 700,
     border: `1.5px solid ${color}`, background: on ? color : "transparent", color: on ? textOn : color,
   });
+  const canMove = h.flexible && !extra && !value && moveOpts;
+  const notes = [];
+  if (streak > 0) notes.push(h.flexible ? `連續達標 ${streak} 週` : `連續 ${streak} 次`);
+  if (h.flexible && week && week.target) notes.push(`本週 ${week.done} / ${week.target} 次`);
+  if (kind === "moved") notes.push(`從週${WD[parse(from).getDay()]}改來`);
+  if (extra) notes.push("額外完成");
   return (
-    <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 12px", marginTop: 8, borderRadius: 12, background: bg, border: `1px solid ${done ? "transparent" : C.line}`, opacity: rest ? 0.7 : 1 }}>
-      <div style={{ width: 56, flexShrink: 0, lineHeight: 1.3, fontVariantNumeric: "tabular-nums" }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: !p.time ? C.pencil : late ? C.warn : C.ink }}>{p.time || "未排時間"}</div>
-        {fmtDur(p.duration) && <div style={{ fontSize: 12, color: C.pencil, marginTop: 1 }}>{fmtDur(p.duration)}</div>}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 16, fontWeight: 700, color: rest ? C.pencil : C.ink, textDecoration: rest ? "line-through" : "none" }}>{h.name}</div>
-        {streak > 0 && <div style={{ fontSize: 12, color: C.green, marginTop: 2 }}>連續 {streak} 次</div>}
-        {warn && !value && <div style={{ fontSize: 12, color: C.green, marginTop: 2 }}>上次漏了，今天完成就能接回</div>}
-      </div>
-      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-        <button onClick={() => onSet(done ? null : "min")} aria-pressed={done} style={btn(done, C.green, "#fff")}>
-          {done ? "✓ 達成" : "達成"}
-        </button>
-        {done ? (
-          <button onClick={() => onSet(value === "full" ? "min" : "full")} aria-pressed={value === "full"} style={btn(value === "full", "#B8860B", "#fff")}>
-            超標
-          </button>
-        ) : (
-          <button onClick={() => onSet(rest ? null : "rest")} aria-pressed={rest} style={btn(rest, C.pencil, "#fff")}>
-            休假
-          </button>
+    <div style={{ marginTop: 8, borderRadius: 12, background: bg, border: `1px solid ${done ? "transparent" : C.line}`, opacity: rest ? 0.7 : 1 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 12px" }}>
+        <div style={{ width: 56, flexShrink: 0, lineHeight: 1.3, fontVariantNumeric: "tabular-nums" }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: extra || !p.time ? C.pencil : late ? C.warn : C.ink }}>{extra ? "額外" : p.time || "未排時間"}</div>
+          {!extra && fmtDur(p.duration) && <div style={{ fontSize: 12, color: C.pencil, marginTop: 1 }}>{fmtDur(p.duration)}</div>}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: rest ? C.pencil : C.ink, textDecoration: rest ? "line-through" : "none" }}>{h.name}</div>
+          {notes.length > 0 && <div style={{ fontSize: 12, color: C.green, marginTop: 2 }}>{notes.join("，")}</div>}
+          {warn && !value && <div style={{ fontSize: 12, color: C.green, marginTop: 2 }}>上次漏了，今天完成就能接回</div>}
+          {canMove && (
+            <button onClick={() => setOpen(!open)} aria-expanded={open}
+              style={{ marginTop: 4, minHeight: 28, fontSize: 13, fontWeight: 600, color: C.green, textDecoration: "underline", textUnderlineOffset: 3 }}>
+              {open ? "收起" : "改日"}
+            </button>
+          )}
+        </div>
+        {!future && (
+          <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+            <button onClick={() => onSet(done ? null : "min")} aria-pressed={done} style={btn(done, C.green, "#fff")}>
+              {done ? "✓ 達成" : "達成"}
+            </button>
+            {extra ? null : done ? (
+              <button onClick={() => onSet(value === "full" ? "min" : "full")} aria-pressed={value === "full"} style={btn(value === "full", "#B8860B", "#fff")}>超標</button>
+            ) : (
+              <button onClick={() => onSet(rest ? null : "rest")} aria-pressed={rest} style={btn(rest, C.pencil, "#fff")}>休假</button>
+            )}
+          </div>
         )}
       </div>
+      {open && canMove && (
+        <div style={{ padding: "0 12px 12px" }}>
+          <div style={{ fontSize: 13, color: C.pencil, marginBottom: 6 }}>改到這週的哪一天？</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {moveOpts.map((o) => (
+              <button key={o.ds} disabled={o.disabled} onClick={() => { onMove(o.ds); setOpen(false); }}
+                aria-label={`改到週${o.label}${o.disabled ? "（這天已有安排）" : ""}`}
+                style={{ width: 44, height: 44, borderRadius: 10, fontSize: 15, fontWeight: 700, border: `1.5px solid ${o.disabled ? C.line : C.green}`, color: o.disabled ? C.line : C.green, background: C.card }}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -223,13 +366,33 @@ function Today({ data, setData, today, onReview, onBody }) {
     const t = setInterval(() => setNow(new Date()), 60000);
     return () => clearInterval(t);
   }, []);
+  const [showExtra, setShowExtra] = useState(false);
+  const [party, setParty] = useState(null); // { id, text }
   const wd = parse(view).getDay();
   const isToday = view === today;
-  const planOn = makePlanOn(data.planHistory);
-  const items = planOn(view).map((h, i) => ({ h, p: h.schedule[wd], i }))
-    .filter((x) => x.p)
-    .sort((a, b) => sortKey(a.p.time) - sortKey(b.p.time) || a.i - b.i);
-  const rec = data.records[view] || {};
+  const isFuture = view > today;
+  const lastNav = addDays(mondayOf(today), 6);
+  const dayFn = makeDayFn(data);
+  const planOn = dayFn.planOn;
+  const { items: all, away, rec } = dayFn(view);
+  const items = all.filter((x) => x.kind !== "extra");
+  const extras = all.filter((x) => x.kind === "extra");
+  const weekDays = Array.from({ length: 7 }, (_, i) => addDays(mondayOf(view), i));
+  const extraCands = planOn(view).filter((h) => h.flexible && !all.some((x) => x.h.id === h.id) && !away.some((x) => x.h.id === h.id));
+
+  const setMove = (origin, id, to) => setData((d) => {
+    const m = { ...(d.moves || {}) };
+    const k = `${origin}|${id}`;
+    if (to === origin) delete m[k]; else m[k] = to;
+    return { ...d, moves: m };
+  });
+  const moveOpts = (x) => {
+    const origin = x.kind === "moved" ? x.from : view;
+    return weekDays.filter((ds) => ds !== view).map((ds) => ({
+      ds, label: WD[parse(ds).getDay()],
+      disabled: ds !== origin && dayFn(ds).items.some((y) => y.h.id === x.h.id),
+    }));
+  };
   const restCount = items.filter((x) => rec[x.h.id] === "rest").length;
   const doneCount = items.filter((x) => rec[x.h.id] && rec[x.h.id] !== "rest").length;
   const nowH = now.getHours() + now.getMinutes() / 60;
@@ -255,6 +418,23 @@ function Today({ data, setData, today, onReview, onBody }) {
     return { ...d, records: { ...d.records, [view]: day } };
   });
 
+  // 打卡：如果剛好達到連續里程碑，就灑彩帶
+  const checkIn = (x, v, st) => {
+    const prev = rec[x.h.id];
+    set(x.h.id, v);
+    const was = prev === "min" || prev === "full", now = v === "min" || v === "full";
+    if (!isToday || was || !now || x.kind === "extra") return;
+    if (x.h.flexible) {
+      const wk = weekCount(x.h.id, dayFn, mondayOf(view), data.start);
+      if (!(wk.target && wk.done < wk.target && wk.done + 1 >= wk.target)) return;
+      const n = st.streak + 1;
+      if (isMilestone(n, true)) setParty({ id: Date.now(), text: `${x.h.name}連續達標 ${n} 週` });
+    } else {
+      const n = st.streak + 1;
+      if (isMilestone(n, false)) setParty({ id: Date.now(), text: `${x.h.name}連續 ${n} 次達成` });
+    }
+  };
+
   const set = (id, v) => setData((d) => {
     const day = { ...(d.records[view] || {}) };
     if (v) day[id] = v; else delete day[id];
@@ -269,7 +449,7 @@ function Today({ data, setData, today, onReview, onBody }) {
           <div style={{ fontSize: 20, fontWeight: 700 }}>{label(view)}</div>
           <div style={{ fontSize: 14, color: C.pencil }}>{DAY_TYPE[wd]}，完成 {doneCount} / {items.length - restCount} 項{restCount ? `，休假 ${restCount} 項` : ""}</div>
         </div>
-        <Arrow dir="›" label="後一天" disabled={isToday} onClick={() => setView(addDays(view, 1))} />
+        <Arrow dir="›" label="後一天" disabled={view >= lastNav} onClick={() => setView(addDays(view, 1))} />
       </div>
       {!isToday && (
         <button onClick={() => setView(today)} style={{ display: "block", margin: "6px auto 0", fontSize: 14, color: C.green, textDecoration: "underline" }}>回到今天</button>
@@ -295,23 +475,64 @@ function Today({ data, setData, today, onReview, onBody }) {
         </div>
       )}
       {items.length === 0 && <p style={{ marginTop: 24, color: C.pencil }}>這天沒有排任何項目，可以到「行程」新增。</p>}
-      {[["todo", items.filter((x) => !rec[x.h.id])], ["done", items.filter((x) => rec[x.h.id])]].map(([k, list]) =>
+      {isFuture && items.length > 0 && <p style={{ marginTop: 12, fontSize: 13, color: C.pencil }}>這天還沒到，可以先看安排或調整可調移項目，當天再打卡。</p>}
+      {[["todo", items.filter((x) => !rec[x.h.id])], ["done", [...items.filter((x) => rec[x.h.id]), ...extras]]].map(([k, list]) =>
         list.length > 0 && (
           <div key={k} style={{ marginTop: 14 }}>
             {k === "done" && <div style={{ fontSize: 13, color: C.pencil, fontWeight: 600, marginBottom: 2 }}>已打卡（{list.length}）</div>}
-            {list.map(({ h, p }) => {
-              const st = streakOf(h.id, data.records, today, data.start, planOn);
-              return <HabitRow key={h.id} h={h} p={p} value={rec[h.id]} onSet={(v) => set(h.id, v)}
-                streak={isToday ? st.streak : 0} warn={isToday && st.prevMissed} late={lateIds.has(h.id)} />;
+            {list.map((x) => {
+              const { h, p } = x;
+              const st = h.flexible ? { streak: flexStreak(h.id, dayFn, today, data.start), prevMissed: false } : streakOf(h.id, data.records, today, data.start, planOn);
+              return <HabitRow key={h.id} h={h} p={p} value={rec[h.id]} onSet={(v) => checkIn(x, v, st)}
+                streak={isToday ? st.streak : 0} warn={isToday && st.prevMissed} late={lateIds.has(h.id)}
+                kind={x.kind} from={x.from} future={isFuture}
+                week={h.flexible ? weekCount(h.id, dayFn, mondayOf(view), data.start) : null}
+                moveOpts={moveOpts(x)} onMove={(to) => setMove(x.kind === "moved" ? x.from : view, h.id, to)} />;
             })}
           </div>
         ))}
-      {pending.length > 0 && (
+      {away.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 13, color: C.pencil, fontWeight: 600 }}>已改到其他天</div>
+          {away.map(({ h, to }) => (
+            <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", marginTop: 6, borderRadius: 10, border: `1px dashed ${C.line}` }}>
+              <span style={{ flex: 1, fontSize: 15, color: C.pencil }}><b style={{ color: C.ink }}>{h.name}</b>　改到週{WD[parse(to).getDay()]}</span>
+              <button onClick={() => setMove(view, h.id, view)} style={{ minHeight: 40, padding: "0 12px", borderRadius: 8, border: `1.5px solid ${C.green}`, color: C.green, fontWeight: 700, fontSize: 14 }}>改回</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {!isFuture && extraCands.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <button onClick={() => setShowExtra(!showExtra)} aria-expanded={showExtra}
+            style={{ minHeight: 40, fontSize: 14, fontWeight: 600, color: C.green, textDecoration: "underline", textUnderlineOffset: 3 }}>
+            {showExtra ? "收起額外完成" : "今天額外做了可調移項目？"}
+          </button>
+          {showExtra && extraCands.map((h) => (
+            <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", marginTop: 6, borderRadius: 10, background: C.card, border: `1px solid ${C.line}` }}>
+              <span style={{ flex: 1, fontSize: 15, fontWeight: 700 }}>{h.name}</span>
+              <button onClick={() => set(h.id, "min")} style={{ minHeight: 40, padding: "0 12px", borderRadius: 8, border: `1.5px solid #B8860B`, color: "#B8860B", fontWeight: 700, fontSize: 14 }}>記一次</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {pending.length > 0 && !isFuture && (
         <button onClick={restAll} style={{ marginTop: 12, fontSize: 14, color: C.pencil, textDecoration: "underline" }}>
           把還沒打卡的項目全部標成休假
         </button>
       )}
-      <p style={{ fontSize: 13, color: C.pencil, marginTop: 12 }}>休假不算漏；漏一次不會斷，連續漏兩次才重算</p>
+      {party && (
+        <>
+          <Confetti key={party.id} onDone={() => setParty(null)} />
+          <div role="status" style={{ position: "fixed", left: 0, right: 0, top: "38%", display: "flex", justifyContent: "center", padding: "0 24px", zIndex: 61, pointerEvents: "none" }}>
+            <div className="party-pop" style={{ background: C.ink, color: "#fff", borderRadius: 16, padding: "16px 22px", textAlign: "center", boxShadow: "0 10px 30px rgba(0,0,0,0.25)" }}>
+              <div style={{ fontSize: 13, color: C.flag, fontWeight: 700 }}>太棒了</div>
+              <div style={{ fontSize: 19, fontWeight: 700, marginTop: 2 }}>{party.text}</div>
+            </div>
+          </div>
+        </>
+      )}
+      <p style={{ fontSize: 13, color: C.pencil, marginTop: 12, lineHeight: 1.6 }}>休假不算漏；漏一次不會斷，連續漏兩次才重算。可調移項目可以按「改日」移到同一週的其他天。</p>
     </div>
   );
 }
@@ -384,6 +605,19 @@ function EditHabit({ habit, cats, onSave, onCancel, onDelete }) {
           <span style={{ fontSize: 14, fontWeight: 600 }}>達成標準（每天通用）</span>
           <input value={d.min} onChange={(e) => setD({ ...d, min: e.target.value })} style={inputStyle} />
         </label>
+
+        <div>
+          <span style={{ fontSize: 14, fontWeight: 600 }}>執行日</span>
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            <Pill on={!d.flexible} onClick={() => setD({ ...d, flexible: false })}>固定日</Pill>
+            <Pill on={!!d.flexible} onClick={() => setD({ ...d, flexible: true })}>可調移</Pill>
+          </div>
+          <p style={{ ...sub, marginTop: 6 }}>
+            {d.flexible
+              ? "排定的日子是預計日。沒辦法照原定日做時，可以在打卡頁按「改日」移到同一週的其他天，提前或延後都可以；一週做超過排定次數算超標。"
+              : "一定要在排定的日子做，沒做就算漏。"}
+          </p>
+        </div>
 
         <div>
           <span style={{ fontSize: 14, fontWeight: 600 }}>每週安排</span>
@@ -476,7 +710,7 @@ function Plan({ data, setData, today }) {
   if (editing) {
     const isNew = editing === "new";
     const habit = isNew
-      ? { id: "h" + Date.now(), name: "", category: data.cats[0], min: "", schedule: {} }
+      ? { id: "h" + Date.now(), name: "", category: data.cats[0], min: "", flexible: false, schedule: {} }
       : habits.find((h) => h.id === editing);
     return (
       <EditHabit habit={habit} cats={data.cats} onCancel={() => setEditing(null)}
@@ -537,7 +771,7 @@ function Plan({ data, setData, today }) {
                   </span>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ display: "block", fontSize: 15, fontWeight: 700 }}>{h.name}</span>
-                    <span style={{ fontSize: 12, color: C.pencil }}>{h.category}</span>
+                    <span style={{ fontSize: 12, color: C.pencil }}>{h.category}{h.flexible ? "，可調移" : ""}</span>
                   </span>
                   <span style={{ fontSize: 14, color: C.ink, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{fmtDur(p.duration) || "–"}</span>
                 </button>
@@ -561,7 +795,10 @@ function Plan({ data, setData, today }) {
                 <button key={h.id} onClick={() => setEditing(h.id)}
                   style={{ display: "flex", width: "100%", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: `1px solid ${C.line}`, textAlign: "left" }}>
                   <span>
-                    <span style={{ display: "block", fontSize: 16, fontWeight: 700 }}>{h.name}</span>
+                    <span style={{ display: "block", fontSize: 16, fontWeight: 700 }}>
+                      {h.name}
+                      {h.flexible && <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: C.green, border: `1px solid ${C.green}`, borderRadius: 4, padding: "0 4px", verticalAlign: "middle" }}>可調移</span>}
+                    </span>
                     <span style={{ fontSize: 13, color: C.pencil }}>{days.length ? durGroups(h, days) : "目前沒有排日子"}</span>
                   </span>
                   <span style={{ textAlign: "right", flexShrink: 0, marginLeft: 10 }}>
@@ -786,23 +1023,25 @@ function Review({ data, setData, today }) {
   const setField = (k, v) => { setDraft((x) => ({ ...x, [k]: v })); setSavedMsg(false); };
   const saveReview = () => { setData((d) => ({ ...d, reviews: { ...d.reviews, [mon]: { ...draft } } })); setSavedMsg(true); };
 
-  const planOn = makePlanOn(data.planHistory);
+  const dayFn = makeDayFn(data);
   const rows = data.cats.map((cat) => {
     let sched = 0, done = 0;
     const cells = days.map((ds) => {
-      const due = planOn(ds).filter((h) => h.category === cat).filter((h) => h.schedule[parse(ds).getDay()]);
-      if (!due.length) return "none";
+      const { items, away, rec } = dayFn(ds);
+      const its = items.filter((x) => x.h.category === cat);
+      const aw = away.filter((x) => x.h.category === cat);
+      if (!its.length && !aw.length) return "none";
+      if (!its.length) return "moved";
       if (ds > today) return "future";
-      const all = due.map((h) => data.records[ds]?.[h.id]);
-      const vals = all.filter((v) => v !== "rest");
-      if (!vals.length) return "rest";
-      if (ds >= data.start) { sched += vals.length; done += vals.filter(Boolean).length; }
-      const n = vals.filter(Boolean).length;
+      const act = its.map((x) => ({ v: rec[x.h.id], extra: x.kind === "extra" })).filter((x) => x.v !== "rest");
+      if (!act.length) return "rest";
+      if (ds >= data.start) { sched += act.filter((x) => !x.extra).length; done += act.filter((x) => x.v).length; }
+      const n = act.filter((x) => x.v).length;
       if (n === 0) return null;
-      if (n < vals.length) return "part";
-      return vals.every((v) => v === "full") ? "full" : "min";
+      if (n < act.length) return "part";
+      return act.every((x) => x.v === "full") ? "full" : "min";
     });
-    return { cat, cells, rate: sched ? Math.round((done / sched) * 100) : null };
+    return { cat, cells, rate: sched ? Math.round((done / sched) * 100) : done ? 100 : null };
   });
 
   return (
@@ -833,7 +1072,7 @@ function Review({ data, setData, today }) {
                       : <span style={{ display: "inline-block", verticalAlign: "middle" }}><Mark v={c} size={20} /></span>}
                   </td>
                 ))}
-                <td style={{ textAlign: "center", fontVariantNumeric: "tabular-nums", borderLeft: `1px solid ${C.line}`, fontWeight: 700, color: rate !== null && rate < 50 ? C.warn : C.ink }}>
+                <td style={{ textAlign: "center", fontVariantNumeric: "tabular-nums", borderLeft: `1px solid ${C.line}`, fontWeight: 700, color: rate !== null && rate > 100 ? "#B8860B" : rate !== null && rate < 50 ? C.warn : C.ink }}>
                   {rate === null ? "–" : `${rate}%`}
                 </td>
               </tr>
@@ -841,7 +1080,7 @@ function Review({ data, setData, today }) {
           </tbody>
         </table>
       </div>
-      <p style={{ fontSize: 13, color: C.pencil, marginTop: 8 }}>虛線圈：當天這個分類只完成了一部分；休假的項目不計入完成率</p>
+      <p style={{ fontSize: 13, color: C.pencil, marginTop: 8 }}>虛線圈：當天只完成一部分；→：改到其他天；休假不計入完成率；額外完成算超標，完成率可超過 100%</p>
 
       <div style={{ marginTop: 20, display: "grid", gap: 16 }}>
         {[["good", "這週順利的"], ["stuck", "卡住或常漏的"], ["adjust", "下週要調整什麼"]].map(([k, t]) => (
@@ -893,13 +1132,14 @@ function normalize(raw, today) {
     from: v.from,
     habits: v.habits
       .filter((h) => h && h.id && h.name)
-      .map((h) => ({ ...h, category: typeof h.category === "string" && h.category.trim() ? h.category : CATS[0], min: h.min || "", schedule: fillDur(h) })),
+      .map((h) => ({ ...h, category: typeof h.category === "string" && h.category.trim() ? h.category : CATS[0], min: h.min || "", flexible: !!h.flexible, schedule: fillDur(h) })),
   }));
   const cats = [];
   for (const c of Array.isArray(d.cats) ? d.cats : CATS) if (typeof c === "string" && c.trim() && !cats.includes(c)) cats.push(c);
   for (const v of hist) for (const h of v.habits) if (!cats.includes(h.category)) cats.push(h.category);
   if (!cats.length) cats.push(...CATS);
-  return { start, records: obj(d.records), reviews: obj(d.reviews), body: obj(d.body), planHistory: hist, cats };
+  const moves = Object.fromEntries(Object.entries(obj(d.moves)).filter(([k, v]) => typeof v === "string" && k.includes("|")));
+  return { start, records: obj(d.records), reviews: obj(d.reviews), body: obj(d.body), planHistory: hist, cats, moves };
 }
 
 class Guard extends Component {
@@ -1024,7 +1264,10 @@ function Main() {
 
   return (
     <div style={{ minHeight: "100vh", background: C.paper, color: C.ink, fontFamily: '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif' }}>
-      <style>{`button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid ${C.flag}; outline-offset: 2px; }`}</style>
+      <style>{`button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid ${C.flag}; outline-offset: 2px; }
+        @keyframes partyPop { 0% { transform: scale(.7); opacity: 0 } 60% { transform: scale(1.06); opacity: 1 } 100% { transform: none } }
+        .party-pop { animation: partyPop .4s ease-out; }
+        @media (prefers-reduced-motion: reduce) { .party-pop { animation: none } }`}</style>
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "20px 18px 48px" }}>
         <header style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <svg width="22" height="28" viewBox="0 0 22 28" aria-hidden="true">
