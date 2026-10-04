@@ -896,54 +896,120 @@ function CatManager({ data, setData }) {
 }
 
 // ---------- 身型追蹤 ----------
-function Trend({ title, unit, pts }) {
-  if (pts.length < 2) return null;
-  const W = 320, H = 130, px = 28, py = 18;
-  const vs = pts.map((p) => p.v);
-  let lo = Math.min(...vs), hi = Math.max(...vs);
-  if (hi - lo < 1) { lo -= 0.5; hi += 0.5; }
-  const x = (i) => px + (i * (W - px * 2)) / (pts.length - 1);
-  const y = (v) => py + ((hi - v) * (H - py * 2)) / (hi - lo);
-  const path = pts.map((p, i) => `${i ? "L" : "M"}${x(i)},${y(p.v)}`).join(" ");
+const WAIST_COLOR = "#B8860B";
+const isDate = (t) => /^\d{4}-\d{2}-\d{2}$/.test(t || "");
+const num = (v) => { const n = parseFloat(v); return isNaN(n) ? undefined : Math.round(n * 10) / 10; };
+
+// 體重與腰圍合併在同一張趨勢圖：左軸 kg、右軸 cm
+function BodyTrend({ list }) {
+  const pts = list.filter((e) => e.weight !== undefined || e.waist !== undefined).slice(-12);
+  if (pts.length < 2) return <p style={{ marginTop: 16, fontSize: 14, color: C.pencil }}>記錄兩次以上，就會出現趨勢圖。</p>;
+  const W = 340, H = 190, L = 40, R = 40, T = 22, B = 30;
+  const x = (i) => L + (i * (W - L - R)) / (pts.length - 1);
+  const scale = (k) => {
+    const vs = pts.map((e) => e[k]).filter((v) => v !== undefined);
+    if (!vs.length) return null;
+    let lo = Math.min(...vs), hi = Math.max(...vs);
+    if (hi - lo < 2) { const m = (hi + lo) / 2; lo = m - 1; hi = m + 1; }
+    const pad = (hi - lo) * 0.15; lo -= pad; hi += pad;
+    return { lo, hi, y: (v) => T + ((hi - v) * (H - T - B)) / (hi - lo) };
+  };
+  const sw = scale("weight"), sc = scale("waist");
+  const line = (k, s) => {
+    if (!s) return "";
+    let d = "";
+    pts.forEach((e, i) => { if (e[k] !== undefined) d += `${d ? "L" : "M"}${x(i)},${s.y(e[k])} `; });
+    return d;
+  };
+  const fmt1 = (v) => (Math.round(v * 10) / 10).toString();
+  const lastIdx = (k) => { for (let i = pts.length - 1; i >= 0; i--) if (pts[i][k] !== undefined) return i; return -1; };
+  const firstIdx = (k) => pts.findIndex((e) => e[k] !== undefined);
+  const short = (ds) => ds.slice(5).replace("-", "/");
+  const label = (k, s, color, i, above) => i >= 0 && s && (
+    <text x={x(i)} y={s.y(pts[i][k]) + (above ? -9 : 16)} textAnchor="middle" fontSize="11" fontWeight="700" fill={color}>{pts[i][k]}</text>
+  );
   return (
     <div style={{ marginTop: 18 }}>
-      <div style={{ fontSize: 15, fontWeight: 700 }}>{title}趨勢</div>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", marginTop: 6, background: C.card, border: `1px solid ${C.line}`, borderRadius: 6 }} role="img" aria-label={`${title}趨勢圖`}>
-        <path d={path} fill="none" stroke={C.green} strokeWidth="2" />
-        {pts.map((p, i) => (
-          <g key={i}>
-            <circle cx={x(i)} cy={y(p.v)} r="3.5" fill={C.green} />
-            {(i === 0 || i === pts.length - 1) && (
-              <text x={x(i)} y={y(p.v) - 8} textAnchor="middle" fontSize="11" fontWeight="700" fill={C.ink}>{p.v}{unit}</text>
-            )}
-            {(i === 0 || i === pts.length - 1) && (
-              <text x={x(i)} y={H - 4} textAnchor="middle" fontSize="10" fill={C.pencil}>{p.label}</text>
-            )}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <span style={{ fontSize: 15, fontWeight: 700 }}>趨勢</span>
+        <span style={{ display: "flex", gap: 12, fontSize: 13 }}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: C.green, fontWeight: 600 }}>
+            <svg width="18" height="8" aria-hidden="true"><line x1="0" y1="4" x2="18" y2="4" stroke={C.green} strokeWidth="2.5" /></svg>體重 kg
+          </span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: WAIST_COLOR, fontWeight: 600 }}>
+            <svg width="18" height="8" aria-hidden="true"><line x1="0" y1="4" x2="18" y2="4" stroke={WAIST_COLOR} strokeWidth="2.5" strokeDasharray="5 3" /></svg>腰圍 cm
+          </span>
+        </span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", marginTop: 6, background: C.card, border: `1px solid ${C.line}`, borderRadius: 8 }}
+        role="img" aria-label={`體重與腰圍趨勢，從 ${short(pts[0].date)} 到 ${short(pts[pts.length - 1].date)}`}>
+        {[0, 0.5, 1].map((f) => <line key={f} x1={L} x2={W - R} y1={T + f * (H - T - B)} y2={T + f * (H - T - B)} stroke={C.line} strokeWidth="1" />)}
+        {sw && [sw.hi, sw.lo].map((v, i) => <text key={"w" + i} x={L - 6} y={(i ? H - B : T) + 4} textAnchor="end" fontSize="10" fill={C.green}>{fmt1(v)}</text>)}
+        {sc && [sc.hi, sc.lo].map((v, i) => <text key={"c" + i} x={W - R + 6} y={(i ? H - B : T) + 4} textAnchor="start" fontSize="10" fill={WAIST_COLOR}>{fmt1(v)}</text>)}
+        <path d={line("weight", sw)} fill="none" stroke={C.green} strokeWidth="2.5" strokeLinejoin="round" />
+        <path d={line("waist", sc)} fill="none" stroke={WAIST_COLOR} strokeWidth="2.5" strokeDasharray="6 4" strokeLinejoin="round" />
+        {pts.map((e, i) => (
+          <g key={e.date}>
+            {e.weight !== undefined && sw && <circle cx={x(i)} cy={sw.y(e.weight)} r="3.5" fill={C.green} />}
+            {e.waist !== undefined && sc && <rect x={x(i) - 3.5} y={sc.y(e.waist) - 3.5} width="7" height="7" fill={WAIST_COLOR} />}
           </g>
         ))}
+        {label("weight", sw, C.green, firstIdx("weight"), true)}
+        {label("weight", sw, C.green, lastIdx("weight"), true)}
+        {label("waist", sc, WAIST_COLOR, firstIdx("waist"), false)}
+        {label("waist", sc, WAIST_COLOR, lastIdx("waist"), false)}
+        <text x={x(0)} y={H - 8} textAnchor="middle" fontSize="10" fill={C.pencil}>{short(pts[0].date)}</text>
+        <text x={x(pts.length - 1)} y={H - 8} textAnchor="middle" fontSize="10" fill={C.pencil}>{short(pts[pts.length - 1].date)}</text>
       </svg>
+      <p style={{ fontSize: 12, color: C.pencil, marginTop: 4 }}>顯示最近 12 筆。左側刻度是體重，右側是腰圍。</p>
     </div>
   );
 }
 
 function Body({ data, setData, today }) {
   const body = data.body || {};
-  const cur = body[today] || {};
-  const [weight, setWeight] = useState(cur.weight ?? "");
-  const [waist, setWaist] = useState(cur.waist ?? "");
-  const [saved, setSaved] = useState(false);
-  const [confirmDel, setConfirmDel] = useState(null);
   const list = Object.keys(body).sort().map((k) => body[k]);
   const short = (ds) => ds.slice(5).replace("-", "/");
 
-  const save = () => {
-    const w = parseFloat(weight), c = parseFloat(waist);
-    const entry = { date: today };
-    if (!isNaN(w)) entry.weight = w;
-    if (!isNaN(c)) entry.waist = c;
-    if (entry.weight === undefined && entry.waist === undefined) return;
-    setData((d) => ({ ...d, body: { ...(d.body || {}), [today]: entry } }));
-    setSaved(true);
+  // 新增紀錄（可選日期補記）
+  const [date, setDate] = useState(today);
+  const [weight, setWeight] = useState("");
+  const [waist, setWaist] = useState("");
+  const [msg, setMsg] = useState("");
+  // 編輯既有紀錄
+  const [edit, setEdit] = useState(null); // { orig, date, weight, waist }
+  const [editErr, setEditErr] = useState("");
+  const [confirmDel, setConfirmDel] = useState(null);
+
+  const add = () => {
+    const w = num(weight), c = num(waist);
+    if (!isDate(date) || date > today) return setMsg("請選擇今天或之前的日期");
+    if (w === undefined && c === undefined) return setMsg("請至少填入體重或腰圍");
+    if (body[date]) return setMsg(`${short(date)} 已經有紀錄，請在下方列表按「編輯」修改`);
+    const entry = { date };
+    if (w !== undefined) entry.weight = w;
+    if (c !== undefined) entry.waist = c;
+    setData((d) => ({ ...d, body: { ...(d.body || {}), [date]: entry } }));
+    setWeight(""); setWaist(""); setDate(today);
+    setMsg(`✓ 已新增 ${short(date)} 的紀錄`);
+  };
+
+  const saveEdit = () => {
+    const w = num(edit.weight), c = num(edit.waist);
+    if (!isDate(edit.date) || edit.date > today) return setEditErr("請選擇今天或之前的日期");
+    if (w === undefined && c === undefined) return setEditErr("請至少填入體重或腰圍");
+    if (edit.date !== edit.orig && body[edit.date]) return setEditErr(`${short(edit.date)} 已經有另一筆紀錄`);
+    const entry = { date: edit.date };
+    if (w !== undefined) entry.weight = w;
+    if (c !== undefined) entry.waist = c;
+    setData((d) => {
+      const b = { ...(d.body || {}) };
+      delete b[edit.orig];
+      b[edit.date] = entry;
+      return { ...d, body: b };
+    });
+    setEdit(null); setEditErr("");
+    setMsg(`✓ 已更新 ${short(entry.date)} 的紀錄`);
   };
 
   const diff = (k, unit) => {
@@ -953,69 +1019,84 @@ function Body({ data, setData, today }) {
     return `${d > 0 ? "+" : ""}${d} ${unit}`;
   };
   const wd = diff("weight", "kg"), cd = diff("waist", "cm");
-  const series = (k) => list.filter((e) => e[k] !== undefined).slice(-12).map((e) => ({ v: e[k], label: short(e.date) }));
+  const field = { ...inputStyle, marginTop: 4 };
+  const small = { minHeight: 40, padding: "0 12px", borderRadius: 8, fontSize: 14, fontWeight: 700 };
 
   return (
     <div>
       <div style={{ marginTop: 16, padding: 16, background: C.card, border: `1.5px solid ${C.line}`, borderRadius: 10 }}>
-        <div style={{ fontSize: 16, fontWeight: 700 }}>{cur.date ? "今天的紀錄（可修改）" : "記錄今天的身型"}</div>
-        <p style={{ fontSize: 13, color: C.pencil, marginTop: 4 }}>每一次紀錄都會保留；同一天記兩次會以最後一次為準。建議每週固定同一天早上量，條件一致才看得出變化。</p>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>新增紀錄</div>
+        <p style={{ fontSize: 13, color: C.pencil, marginTop: 4 }}>建議每週固定同一天早上量，條件一致才看得出變化。日期可以改，用來補記之前的紀錄。</p>
+        <label style={{ display: "block", marginTop: 10 }}>
+          <span style={{ fontSize: 14, fontWeight: 600 }}>日期</span>
+          <input type="date" value={date} max={today} onChange={(e) => { setDate(e.target.value); setMsg(""); }} style={field} />
+        </label>
         <div style={{ display: "flex", gap: 12, marginTop: 10 }}>
           <label style={{ flex: 1 }}>
             <span style={{ fontSize: 14, fontWeight: 600 }}>體重（kg）</span>
-            <input type="number" inputMode="decimal" step="0.1" value={weight} onChange={(e) => { setWeight(e.target.value); setSaved(false); }} style={inputStyle} />
+            <input type="number" inputMode="decimal" step="0.1" value={weight} onChange={(e) => { setWeight(e.target.value); setMsg(""); }} style={field} />
           </label>
           <label style={{ flex: 1 }}>
             <span style={{ fontSize: 14, fontWeight: 600 }}>腰圍（cm）</span>
-            <input type="number" inputMode="decimal" step="0.1" value={waist} onChange={(e) => { setWaist(e.target.value); setSaved(false); }} style={inputStyle} />
+            <input type="number" inputMode="decimal" step="0.1" value={waist} onChange={(e) => { setWaist(e.target.value); setMsg(""); }} style={field} />
           </label>
         </div>
-        <button onClick={save} style={{ width: "100%", marginTop: 12, padding: "11px 0", borderRadius: 8, background: C.green, color: "#fff", fontWeight: 700, fontSize: 16 }}>
-          {saved ? "已儲存" : "儲存"}
-        </button>
+        <button onClick={add} style={{ width: "100%", marginTop: 12, height: 48, borderRadius: 10, background: C.green, color: "#fff", fontWeight: 700, fontSize: 16 }}>儲存</button>
+        {msg && <p role="status" style={{ fontSize: 13, marginTop: 8, color: msg.startsWith("✓") ? C.green : C.warn }}>{msg}</p>}
       </div>
 
       {(wd || cd) && (
-        <p style={{ marginTop: 16, fontSize: 15 }}>
-          從第一次紀錄到現在：{[wd && `體重 ${wd}`, cd && `腰圍 ${cd}`].filter(Boolean).join("，")}
-        </p>
+        <p style={{ marginTop: 16, fontSize: 15 }}>從第一次紀錄到現在：{[wd && `體重 ${wd}`, cd && `腰圍 ${cd}`].filter(Boolean).join("，")}</p>
       )}
-      {list.length < 2 && <p style={{ marginTop: 16, fontSize: 14, color: C.pencil }}>記錄兩週以上，就會出現趨勢圖。</p>}
-      <Trend title="體重" unit="kg" pts={series("weight")} />
-      <Trend title="腰圍" unit="cm" pts={series("waist")} />
+      <BodyTrend list={list} />
 
       {list.length > 0 && (
-        <table style={{ width: "100%", marginTop: 20, borderCollapse: "collapse", fontSize: 14 }}>
-          <thead>
-            <tr style={{ color: C.pencil, textAlign: "left" }}>
-              <th style={{ padding: "6px 0", fontWeight: 600 }}>日期</th>
-              <th style={{ padding: "6px 0", fontWeight: 600 }}>體重</th>
-              <th style={{ padding: "6px 0", fontWeight: 600 }}>腰圍</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {[...list].reverse().map((e) => (
-              <tr key={e.date} style={{ borderTop: `1px solid ${C.line}`, fontVariantNumeric: "tabular-nums" }}>
-                <td style={{ padding: "8px 0" }}>{short(e.date)}</td>
-                <td>{e.weight !== undefined ? `${e.weight} kg` : "–"}</td>
-                <td>{e.waist !== undefined ? `${e.waist} cm` : "–"}</td>
-                <td style={{ textAlign: "right" }}>
-                  <button onClick={() => {
-                      if (confirmDel === e.date) {
-                        setData((d) => { const b = { ...(d.body || {}) }; delete b[e.date]; return { ...d, body: b }; });
-                        setConfirmDel(null);
-                        if (e.date === today) { setWeight(""); setWaist(""); }
-                      } else setConfirmDel(e.date);
-                    }}
-                    style={{ minHeight: 36, padding: "0 6px", fontSize: 13, color: C.warn, textDecoration: "underline" }}>
-                    {confirmDel === e.date ? "確認刪除" : "刪除"}
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={{ marginTop: 20 }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>所有紀錄</div>
+          {[...list].reverse().map((e) =>
+            edit && edit.orig === e.date ? (
+              <div key={e.date} style={{ marginTop: 8, padding: 12, borderRadius: 10, background: C.card, border: `1.5px solid ${C.green}` }}>
+                <label style={{ display: "block" }}>
+                  <span style={{ fontSize: 13, color: C.pencil }}>日期</span>
+                  <input type="date" value={edit.date} max={today} onChange={(ev) => setEdit({ ...edit, date: ev.target.value })} style={field} />
+                </label>
+                <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+                  <label style={{ flex: 1 }}>
+                    <span style={{ fontSize: 13, color: C.pencil }}>體重（kg）</span>
+                    <input type="number" inputMode="decimal" step="0.1" value={edit.weight} onChange={(ev) => setEdit({ ...edit, weight: ev.target.value })} style={field} />
+                  </label>
+                  <label style={{ flex: 1 }}>
+                    <span style={{ fontSize: 13, color: C.pencil }}>腰圍（cm）</span>
+                    <input type="number" inputMode="decimal" step="0.1" value={edit.waist} onChange={(ev) => setEdit({ ...edit, waist: ev.target.value })} style={field} />
+                  </label>
+                </div>
+                {editErr && <p role="alert" style={{ fontSize: 13, color: C.warn, marginTop: 6 }}>{editErr}</p>}
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  <button onClick={saveEdit} style={{ ...small, flex: 1, background: C.green, color: "#fff" }}>儲存</button>
+                  <button onClick={() => { setEdit(null); setEditErr(""); }} style={{ ...small, flex: 1, border: `1.5px solid ${C.ink}` }}>取消</button>
+                </div>
+              </div>
+            ) : (
+              <div key={e.date} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: `1px solid ${C.line}`, fontVariantNumeric: "tabular-nums" }}>
+                <span style={{ width: 52, fontSize: 14, fontWeight: 700 }}>{short(e.date)}</span>
+                <span style={{ flex: 1, fontSize: 14 }}>
+                  <span style={{ color: C.green }}>{e.weight !== undefined ? `${e.weight} kg` : "–"}</span>
+                  <span style={{ color: C.pencil }}>　</span>
+                  <span style={{ color: WAIST_COLOR }}>{e.waist !== undefined ? `${e.waist} cm` : "–"}</span>
+                </span>
+                <button onClick={() => { setEdit({ orig: e.date, date: e.date, weight: e.weight ?? "", waist: e.waist ?? "" }); setEditErr(""); setConfirmDel(null); setMsg(""); }}
+                  style={{ ...small, color: C.green }}>編輯</button>
+                <button onClick={() => {
+                    if (confirmDel === e.date) {
+                      setData((d) => { const b = { ...(d.body || {}) }; delete b[e.date]; return { ...d, body: b }; });
+                      setConfirmDel(null);
+                    } else setConfirmDel(e.date);
+                  }}
+                  style={{ ...small, color: C.warn }}>{confirmDel === e.date ? "確認刪除" : "刪除"}</button>
+              </div>
+            )
+          )}
+        </div>
       )}
     </div>
   );
@@ -1111,6 +1192,7 @@ function Review({ data, setData, today }) {
       </div>
 
       <Backup data={data} setData={setData} today={today} />
+      {currentBuild() && <p style={{ fontSize: 12, color: C.pencil, marginTop: 20 }}>版本 {currentBuild()}</p>}
       <div style={{ marginTop: 32, borderTop: `1px solid ${C.line}`, paddingTop: 14 }}>
         <button onClick={() => {
             if (confirmReset) { setData((d) => ({ ...d, start: today, records: {}, reviews: {}, planHistory: [{ from: today, habits: currentHabits(d) }] })); setConfirmReset(false); }
@@ -1179,6 +1261,20 @@ class Guard extends Component {
   }
 }
 
+// ---------- 版本檢查：網站更新後，提示重新載入 ----------
+// 打包後的程式檔名包含版本碼（例如 assets/index-AbC123.js），比對網站上最新的檔名即可得知是否有新版
+const currentBuild = () => {
+  const el = typeof document !== "undefined" && document.querySelector('script[type="module"][src*="assets/index-"]');
+  const m = el && el.getAttribute("src").match(/assets\/index-([^./]+)\.js/);
+  return m ? m[1] : "";
+};
+async function latestBuild() {
+  const res = await fetch(`./index.html?check=${Date.now()}`, { cache: "no-store" });
+  if (!res.ok) return "";
+  const m = (await res.text()).match(/assets\/index-([^./]+)\.js/);
+  return m ? m[1] : "";
+}
+
 const hasStorage = () => typeof window !== "undefined" && window.storage && typeof window.storage.set === "function";
 
 // ---------- 備份：匯出、匯入 ----------
@@ -1239,6 +1335,21 @@ function Main() {
   const [tab, setTab] = useState("today");
   const [save, setSave] = useState({ state: "idle", at: "" });
   const [retry, setRetry] = useState(0);
+  const [newVersion, setNewVersion] = useState(false);
+
+  useEffect(() => {
+    const mine = currentBuild();
+    if (!mine) return; // 在 Claude 預覽裡執行時沒有版本碼，不檢查
+    let stop = false;
+    const check = async () => {
+      try { const v = await latestBuild(); if (!stop && v && v !== mine) setNewVersion(true); } catch (e) { /* 離線時略過 */ }
+    };
+    check();
+    const onShow = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onShow);
+    const t = setInterval(check, 30 * 60 * 1000);
+    return () => { stop = true; document.removeEventListener("visibilitychange", onShow); clearInterval(t); };
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -1312,6 +1423,12 @@ function Main() {
         </nav>
 
 
+        {newVersion && (
+          <button onClick={() => window.location.reload()}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", marginTop: 12, minHeight: 48, padding: "10px 14px", borderRadius: 12, background: C.ink, color: "#fff", fontSize: 15, fontWeight: 700, textAlign: "left" }}>
+            <span>有新版本，點這裡更新</span><span style={{ color: C.flag }}>↻</span>
+          </button>
+        )}
         {(save.state === "error" || save.state === "unavailable") && (
           <div role="alert" style={{ marginTop: 12, padding: "10px 14px", borderRadius: 10, background: "#FBEDE6", color: C.warn, fontSize: 13, lineHeight: 1.6 }}>
             {save.state === "unavailable"
