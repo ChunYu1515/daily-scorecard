@@ -101,9 +101,11 @@ function defaultHabits() {
   ];
 }
 
-// 連續次數：只算有排程的日子；漏一次不會斷，連續漏兩次才重算
+// 連續次數：只算有排程的日子。漏掉的日子在當週補打卡就能接回；
+// 本週還沒補的缺口會先中斷計算（補上後自動接回），過了那一週就無法再補。
 function streakOf(id, records, today, start, planOn) {
-  let streak = 0, misses = 0, prevMissed = null;
+  let streak = 0, missDay = null;
+  const mon = mondayOf(today);
   for (let i = 0; i < 400; i++) {
     const ds = addDays(today, -i);
     if (ds < start) break;
@@ -111,12 +113,12 @@ function streakOf(id, records, today, start, planOn) {
     if (!h || !h.schedule[parse(ds).getDay()]) continue;
     const val = records[ds]?.[id];
     if (val === "rest") continue; // 休假不算漏，也不算完成
-    const done = !!val;
-    if (i === 0) { if (done) streak++; continue; }
-    if (prevMissed === null) prevMissed = !done;
-    if (done) { streak++; misses = 0; } else { misses++; if (misses >= 2) break; }
+    if (i === 0) { if (val) streak++; continue; } // 今天還沒結束，沒做不算漏
+    if (val) { streak++; continue; }
+    if (ds >= mon) missDay = ds; // 本週的缺口，還能補
+    break;
   }
-  return { streak, prevMissed: !!prevMissed };
+  return { streak, missDay };
 }
 
 // ---------- 行程版本：每次調整從當天生效 ----------
@@ -188,15 +190,15 @@ function weekCount(id, dayFn, mon, start) {
   return { target, done };
 }
 
-// 可調移項目：連續達標幾週（漏一週不斷，連續漏兩週才重算）
+// 可調移項目：連續達標幾週；某一週結束時沒達標就中斷（本週還在進行中，不算中斷）
 function flexStreak(id, dayFn, today, start) {
-  let streak = 0, misses = 0, mon = mondayOf(today);
+  let streak = 0, mon = mondayOf(today);
   for (let k = 0; k < 60; k++, mon = addDays(mon, -7)) {
     if (addDays(mon, 6) < start) break;
     const { target, done } = weekCount(id, dayFn, mon, start);
     if (k === 0) { if (target && done >= target) streak++; continue; }
     if (!target) continue;
-    if (done >= target) { streak++; misses = 0; } else { misses++; if (misses >= 2) break; }
+    if (done >= target) streak++; else break;
   }
   return streak;
 }
@@ -213,7 +215,12 @@ function withHabits(data, habits, today) {
 function Mark({ v, size = 28 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 28 28" aria-hidden="true">
-      {v === "moved" ? (
+      {v === "bonus" ? (
+        <>
+          <circle cx="14" cy="14" r="12" fill="#FBF2D6" stroke="#B8860B" strokeWidth="2" />
+          <text x="14" y="15" textAnchor="middle" dominantBaseline="middle" fontSize="16" fontWeight="700" fill="#B8860B">+</text>
+        </>
+      ) : v === "moved" ? (
         <text x="14" y="15" textAnchor="middle" dominantBaseline="middle" fontSize="16" fontWeight="700" fill={C.pencil}>→</text>
       ) : v === "rest" ? (
         <circle cx="14" cy="14" r="12" fill={C.paper} stroke={C.pencil} strokeWidth="1.5" />
@@ -307,20 +314,22 @@ function HabitRow({ h, p, value, onSet, streak, warn, late, kind, from, week, fu
   const canMove = h.flexible && !extra && !value && moveOpts;
   const notes = [];
   if (streak > 0) notes.push(h.flexible ? `連續達標 ${streak} 週` : `連續 ${streak} 次`);
-  if (h.flexible && week && week.target) notes.push(`本週 ${week.done} / ${week.target} 次`);
+  if (h.flexible && week && week.target) notes.push(week.done > week.target
+    ? `本週 ${week.target} / ${week.target} 次，額外 +${week.done - week.target}`
+    : `本週 ${week.done} / ${week.target} 次`);
   if (kind === "moved") notes.push(`從週${WD[parse(from).getDay()]}改來`);
   if (extra) notes.push("額外完成");
   return (
     <div style={{ marginTop: 8, borderRadius: 12, background: bg, border: `1px solid ${done ? "transparent" : C.line}`, opacity: rest ? 0.7 : 1 }}>
       <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 12px" }}>
         <div style={{ width: 56, flexShrink: 0, lineHeight: 1.3, fontVariantNumeric: "tabular-nums" }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: extra || !p.time ? C.pencil : late ? C.warn : C.ink }}>{extra ? "額外" : p.time || "未排時間"}</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: extra || !p.time ? C.pencil : late ? C.warn : C.ink }}>{extra ? "額外" : p.time}</div>
           {!extra && fmtDur(p.duration) && <div style={{ fontSize: 12, color: C.pencil, marginTop: 1 }}>{fmtDur(p.duration)}</div>}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: rest ? C.pencil : C.ink, textDecoration: rest ? "line-through" : "none" }}>{h.name}</div>
           {notes.length > 0 && <div style={{ fontSize: 12, color: C.green, marginTop: 2 }}>{notes.join("，")}</div>}
-          {warn && !value && <div style={{ fontSize: 12, color: C.green, marginTop: 2 }}>上次漏了，今天完成就能接回</div>}
+          
           {canMove && (
             <button onClick={() => setOpen(!open)} aria-expanded={open}
               style={{ marginTop: 4, minHeight: 28, fontSize: 13, fontWeight: 600, color: C.green, textDecoration: "underline", textUnderlineOffset: 3 }}>
@@ -371,6 +380,7 @@ function Today({ data, setData, today, onReview, onBody }) {
   const wd = parse(view).getDay();
   const isToday = view === today;
   const isFuture = view > today;
+  const locked = mondayOf(view) < mondayOf(today); // 上週以前已結算，不能再補
   const lastNav = addDays(mondayOf(today), 6);
   const dayFn = makeDayFn(data);
   const planOn = dayFn.planOn;
@@ -474,7 +484,8 @@ function Today({ data, setData, today, onReview, onBody }) {
           )}
         </div>
       )}
-      {items.length === 0 && <p style={{ marginTop: 24, color: C.pencil }}>這天沒有排任何項目，可以到「行程」新增。</p>}
+      {items.length === 0 && <p style={{ marginTop: 24, color: C.pencil }}>這天沒有排任何項目，可以到右上角「設定」新增。</p>}
+      {locked && <p style={{ marginTop: 12, fontSize: 13, color: C.pencil }}>這週已經結算，只能查看，無法再補打卡。</p>}
       {isFuture && items.length > 0 && <p style={{ marginTop: 12, fontSize: 13, color: C.pencil }}>這天還沒到，可以先看安排或調整可調移項目，當天再打卡。</p>}
       {[["todo", items.filter((x) => !rec[x.h.id])], ["done", [...items.filter((x) => rec[x.h.id]), ...extras]]].map(([k, list]) =>
         list.length > 0 && (
@@ -482,12 +493,12 @@ function Today({ data, setData, today, onReview, onBody }) {
             {k === "done" && <div style={{ fontSize: 13, color: C.pencil, fontWeight: 600, marginBottom: 2 }}>已打卡（{list.length}）</div>}
             {list.map((x) => {
               const { h, p } = x;
-              const st = h.flexible ? { streak: flexStreak(h.id, dayFn, today, data.start), prevMissed: false } : streakOf(h.id, data.records, today, data.start, planOn);
+              const st = h.flexible ? { streak: flexStreak(h.id, dayFn, today, data.start), missDay: null } : streakOf(h.id, data.records, today, data.start, planOn);
               return <HabitRow key={h.id} h={h} p={p} value={rec[h.id]} onSet={(v) => checkIn(x, v, st)}
-                streak={isToday ? st.streak : 0} warn={isToday && st.prevMissed} late={lateIds.has(h.id)}
-                kind={x.kind} from={x.from} future={isFuture}
+                streak={isToday ? st.streak : 0} warn={isToday ? st.missDay : null} late={lateIds.has(h.id)}
+                kind={x.kind} from={x.from} future={isFuture || locked}
                 week={h.flexible ? weekCount(h.id, dayFn, mondayOf(view), data.start) : null}
-                moveOpts={moveOpts(x)} onMove={(to) => setMove(x.kind === "moved" ? x.from : view, h.id, to)} />;
+                moveOpts={locked ? null : moveOpts(x)} onMove={(to) => setMove(x.kind === "moved" ? x.from : view, h.id, to)} />;
             })}
           </div>
         ))}
@@ -502,7 +513,7 @@ function Today({ data, setData, today, onReview, onBody }) {
           ))}
         </div>
       )}
-      {!isFuture && extraCands.length > 0 && (
+      {!isFuture && !locked && extraCands.length > 0 && (
         <div style={{ marginTop: 16 }}>
           <button onClick={() => setShowExtra(!showExtra)} aria-expanded={showExtra}
             style={{ minHeight: 40, fontSize: 14, fontWeight: 600, color: C.green, textDecoration: "underline", textUnderlineOffset: 3 }}>
@@ -516,7 +527,7 @@ function Today({ data, setData, today, onReview, onBody }) {
           ))}
         </div>
       )}
-      {pending.length > 0 && !isFuture && (
+      {pending.length > 0 && !isFuture && !locked && (
         <button onClick={restAll} style={{ marginTop: 12, fontSize: 14, color: C.pencil, textDecoration: "underline" }}>
           把還沒打卡的項目全部標成休假
         </button>
@@ -532,7 +543,7 @@ function Today({ data, setData, today, onReview, onBody }) {
           </div>
         </>
       )}
-      <p style={{ fontSize: 13, color: C.pencil, marginTop: 12, lineHeight: 1.6 }}>休假不算漏；漏一次不會斷，連續漏兩次才重算。可調移項目可以按「改日」移到同一週的其他天。</p>
+      <p style={{ fontSize: 13, color: C.pencil, marginTop: 12, lineHeight: 1.6 }}>休假不算漏；漏掉的日子要在當週（週日前）補打卡，否則連續會中斷。可調移項目可以按「改日」移到同一週的其他天。</p>
     </div>
   );
 }
@@ -637,7 +648,7 @@ function EditHabit({ habit, cats, onSave, onCancel, onDelete }) {
                   <span aria-hidden="true" style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${on ? C.green : C.pencil}`, background: on ? C.green : "transparent", color: "#fff", fontSize: 13, lineHeight: "16px", textAlign: "center", flexShrink: 0 }}>{on ? "✓" : ""}</span>
                   <span style={{ width: 34, fontSize: 15, fontWeight: 700 }}>週{WD[w]}</span>
                   <span style={{ flex: 1, fontSize: 14, color: e ? C.ink : C.pencil }}>
-                    {e ? [e.time || "未排時間", fmtDur(e.duration)].filter(Boolean).join("，") : "未安排"}
+                    {e ? [e.time, fmtDur(e.duration)].filter(Boolean).join("，") : "未安排"}
                   </span>
                 </button>
               );
@@ -692,6 +703,27 @@ function EditHabit({ habit, cats, onSave, onCancel, onDelete }) {
           {confirmDel ? "再按一次確認刪除這個項目" : "刪除這個項目"}
         </button>
       )}
+    </div>
+  );
+}
+
+function Settings({ data, setData, today }) {
+  const [confirmReset, setConfirmReset] = useState(false);
+  return (
+    <div>
+      <Plan data={data} setData={setData} today={today} />
+      <div style={{ marginTop: 32, borderTop: `1px solid ${C.line}` }} />
+      <Backup data={data} setData={setData} today={today} />
+      {currentBuild() && <p style={{ fontSize: 12, color: C.pencil, marginTop: 20 }}>版本 {currentBuild()}</p>}
+      <div style={{ marginTop: 32, borderTop: `1px solid ${C.line}`, paddingTop: 14 }}>
+        <button onClick={() => {
+            if (confirmReset) { setData((d) => ({ ...d, start: today, records: {}, reviews: {}, planHistory: [{ from: today, habits: currentHabits(d) }] })); setConfirmReset(false); }
+            else setConfirmReset(true);
+          }}
+          style={{ fontSize: 13, color: C.warn, textDecoration: "underline" }}>
+          {confirmReset ? "再按一次確認清除所有打卡與回顧紀錄" : "清除所有打卡與回顧紀錄"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -766,7 +798,7 @@ function Plan({ data, setData, today }) {
                 <button key={h.id} onClick={() => setEditing(h.id)}
                   style={{ display: "flex", width: "100%", gap: 10, alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.line}`, textAlign: "left" }}>
                   <span style={{ width: 62, flexShrink: 0, fontSize: 14, fontWeight: 700, color: p.time ? C.green : C.pencil, lineHeight: 1.3, fontVariantNumeric: "tabular-nums" }}>
-                    {p.time || "未排時間"}
+                    {p.time}
                     {end && <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: C.pencil }}>～{end}</span>}
                   </span>
                   <span style={{ flex: 1, minWidth: 0 }}>
@@ -897,6 +929,18 @@ function CatManager({ data, setData }) {
 
 // ---------- 身型追蹤 ----------
 const WAIST_COLOR = "#B8860B";
+const PERIOD_COLOR = "#B5476A";
+
+function PeriodToggle({ on, onChange }) {
+  return (
+    <button type="button" onClick={() => onChange(!on)} aria-pressed={on}
+      style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", minHeight: 44, marginTop: 10, padding: "0 12px", borderRadius: 10, border: `1.5px solid ${on ? PERIOD_COLOR : C.line}`, background: on ? "#F8E6EC" : "transparent", textAlign: "left" }}>
+      <span aria-hidden="true" style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${on ? PERIOD_COLOR : C.pencil}`, background: on ? PERIOD_COLOR : "transparent", color: "#fff", fontSize: 13, lineHeight: "16px", textAlign: "center" }}>{on ? "✓" : ""}</span>
+      <span style={{ fontSize: 15, fontWeight: 600, color: on ? PERIOD_COLOR : C.ink }}>經期期間</span>
+      <span style={{ fontSize: 12, color: C.pencil, marginLeft: "auto" }}>體重可能暫時偏高</span>
+    </button>
+  );
+}
 const isDate = (t) => /^\d{4}-\d{2}-\d{2}$/.test(t || "");
 const num = (v) => { const n = parseFloat(v); return isNaN(n) ? undefined : Math.round(n * 10) / 10; };
 
@@ -943,6 +987,9 @@ function BodyTrend({ list }) {
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", marginTop: 6, background: C.card, border: `1px solid ${C.line}`, borderRadius: 8 }}
         role="img" aria-label={`體重與腰圍趨勢，從 ${short(pts[0].date)} 到 ${short(pts[pts.length - 1].date)}`}>
+        {pts.map((e, i) => e.period && (
+          <rect key={"p" + e.date} x={x(i) - 9} y={T - 6} width="18" height={H - T - B + 12} rx="4" fill="#F8E6EC" />
+        ))}
         {[0, 0.5, 1].map((f) => <line key={f} x1={L} x2={W - R} y1={T + f * (H - T - B)} y2={T + f * (H - T - B)} stroke={C.line} strokeWidth="1" />)}
         {sw && [sw.hi, sw.lo].map((v, i) => <text key={"w" + i} x={L - 6} y={(i ? H - B : T) + 4} textAnchor="end" fontSize="10" fill={C.green}>{fmt1(v)}</text>)}
         {sc && [sc.hi, sc.lo].map((v, i) => <text key={"c" + i} x={W - R + 6} y={(i ? H - B : T) + 4} textAnchor="start" fontSize="10" fill={WAIST_COLOR}>{fmt1(v)}</text>)}
@@ -961,7 +1008,10 @@ function BodyTrend({ list }) {
         <text x={x(0)} y={H - 8} textAnchor="middle" fontSize="10" fill={C.pencil}>{short(pts[0].date)}</text>
         <text x={x(pts.length - 1)} y={H - 8} textAnchor="middle" fontSize="10" fill={C.pencil}>{short(pts[pts.length - 1].date)}</text>
       </svg>
-      <p style={{ fontSize: 12, color: C.pencil, marginTop: 4 }}>顯示最近 12 筆。左側刻度是體重，右側是腰圍。</p>
+      <p style={{ fontSize: 12, color: C.pencil, marginTop: 4 }}>
+        顯示最近 12 筆。左側刻度是體重，右側是腰圍。
+        {pts.some((e) => e.period) && <span>粉色底的日期是<span style={{ color: PERIOD_COLOR, fontWeight: 700 }}>經期期間</span>。</span>}
+      </p>
     </div>
   );
 }
@@ -975,6 +1025,7 @@ function Body({ data, setData, today }) {
   const [date, setDate] = useState(today);
   const [weight, setWeight] = useState("");
   const [waist, setWaist] = useState("");
+  const [period, setPeriod] = useState(false);
   const [msg, setMsg] = useState("");
   // 編輯既有紀錄
   const [edit, setEdit] = useState(null); // { orig, date, weight, waist }
@@ -989,8 +1040,9 @@ function Body({ data, setData, today }) {
     const entry = { date };
     if (w !== undefined) entry.weight = w;
     if (c !== undefined) entry.waist = c;
+    if (period) entry.period = true;
     setData((d) => ({ ...d, body: { ...(d.body || {}), [date]: entry } }));
-    setWeight(""); setWaist(""); setDate(today);
+    setWeight(""); setWaist(""); setPeriod(false); setDate(today);
     setMsg(`✓ 已新增 ${short(date)} 的紀錄`);
   };
 
@@ -1002,6 +1054,7 @@ function Body({ data, setData, today }) {
     const entry = { date: edit.date };
     if (w !== undefined) entry.weight = w;
     if (c !== undefined) entry.waist = c;
+    if (edit.period) entry.period = true;
     setData((d) => {
       const b = { ...(d.body || {}) };
       delete b[edit.orig];
@@ -1041,6 +1094,7 @@ function Body({ data, setData, today }) {
             <input type="number" inputMode="decimal" step="0.1" value={waist} onChange={(e) => { setWaist(e.target.value); setMsg(""); }} style={field} />
           </label>
         </div>
+        <PeriodToggle on={period} onChange={(v) => { setPeriod(v); setMsg(""); }} />
         <button onClick={add} style={{ width: "100%", marginTop: 12, height: 48, borderRadius: 10, background: C.green, color: "#fff", fontWeight: 700, fontSize: 16 }}>儲存</button>
         {msg && <p role="status" style={{ fontSize: 13, marginTop: 8, color: msg.startsWith("✓") ? C.green : C.warn }}>{msg}</p>}
       </div>
@@ -1070,6 +1124,7 @@ function Body({ data, setData, today }) {
                     <input type="number" inputMode="decimal" step="0.1" value={edit.waist} onChange={(ev) => setEdit({ ...edit, waist: ev.target.value })} style={field} />
                   </label>
                 </div>
+                <PeriodToggle on={!!edit.period} onChange={(v) => setEdit({ ...edit, period: v })} />
                 {editErr && <p role="alert" style={{ fontSize: 13, color: C.warn, marginTop: 6 }}>{editErr}</p>}
                 <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                   <button onClick={saveEdit} style={{ ...small, flex: 1, background: C.green, color: "#fff" }}>儲存</button>
@@ -1078,13 +1133,16 @@ function Body({ data, setData, today }) {
               </div>
             ) : (
               <div key={e.date} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: `1px solid ${C.line}`, fontVariantNumeric: "tabular-nums" }}>
-                <span style={{ width: 52, fontSize: 14, fontWeight: 700 }}>{short(e.date)}</span>
+                <span style={{ width: 52, fontSize: 14, fontWeight: 700 }}>
+                  {short(e.date)}
+                  {e.period && <span style={{ display: "block", fontSize: 11, fontWeight: 700, color: PERIOD_COLOR }}>● 經期</span>}
+                </span>
                 <span style={{ flex: 1, fontSize: 14 }}>
                   <span style={{ color: C.green }}>{e.weight !== undefined ? `${e.weight} kg` : "–"}</span>
                   <span style={{ color: C.pencil }}>　</span>
                   <span style={{ color: WAIST_COLOR }}>{e.waist !== undefined ? `${e.waist} cm` : "–"}</span>
                 </span>
-                <button onClick={() => { setEdit({ orig: e.date, date: e.date, weight: e.weight ?? "", waist: e.waist ?? "" }); setEditErr(""); setConfirmDel(null); setMsg(""); }}
+                <button onClick={() => { setEdit({ orig: e.date, date: e.date, weight: e.weight ?? "", waist: e.waist ?? "", period: !!e.period }); setEditErr(""); setConfirmDel(null); setMsg(""); }}
                   style={{ ...small, color: C.green }}>編輯</button>
                 <button onClick={() => {
                     if (confirmDel === e.date) {
@@ -1105,7 +1163,6 @@ function Body({ data, setData, today }) {
 // ---------- 每週回顧 ----------
 function Review({ data, setData, today }) {
   const [mon, setMon] = useState(mondayOf(today));
-  const [confirmReset, setConfirmReset] = useState(false);
   const days = Array.from({ length: 7 }, (_, i) => addDays(mon, i));
   const review = data.reviews[mon] || {};
   const isCurrent = mon === mondayOf(today);
@@ -1119,7 +1176,8 @@ function Review({ data, setData, today }) {
 
   const dayFn = makeDayFn(data);
   const rows = data.cats.map((cat) => {
-    let sched = 0, done = 0;
+    let sched = 0, done = 0, bonus = 0;
+    const flex = {}; // 可調移項目：本週已過去的排定次數、完成次數
     const cells = days.map((ds) => {
       const { items, away, rec } = dayFn(ds);
       const its = items.filter((x) => x.h.category === cat);
@@ -1127,15 +1185,31 @@ function Review({ data, setData, today }) {
       if (!its.length && !aw.length) return "none";
       if (!its.length) return "moved";
       if (ds > today) return "future";
-      const act = its.map((x) => ({ v: rec[x.h.id], extra: x.kind === "extra" })).filter((x) => x.v !== "rest");
+      const act = its.map((x) => ({ h: x.h, v: rec[x.h.id], extra: x.kind === "extra" })).filter((x) => x.v !== "rest");
       if (!act.length) return "rest";
-      if (ds >= data.start) { sched += act.filter((x) => !x.extra).length; done += act.filter((x) => x.v).length; }
+      if (ds >= data.start) {
+        for (const x of act) {
+          if (x.h.flexible) {
+            const f = flex[x.h.id] || (flex[x.h.id] = { past: 0, dn: 0 });
+            if (!x.extra) f.past++;
+            if (x.v) f.dn++;
+          } else { sched++; if (x.v) done++; }
+        }
+      }
       const n = act.filter((x) => x.v).length;
       if (n === 0) return null;
       if (n < act.length) return "part";
-      return act.every((x) => x.v === "full") ? "full" : "min";
+      if (act.some((x) => x.extra)) return "bonus"; // 當天排定的都完成，又額外多做
+      return act.every((x) => x.v === "full" || x.extra) ? "full" : "min";
     });
-    return { cat, cells, rate: sched ? Math.round((done / sched) * 100) : done ? 100 : null };
+    for (const [id, f] of Object.entries(flex)) {
+      const wk = weekCount(id, dayFn, mon, data.start).target; // 整週目標（含還沒到的日子）
+      const planned = Math.min(f.dn, wk);
+      sched += Math.max(f.past, planned);
+      done += planned;
+      bonus += Math.max(0, f.dn - wk);
+    }
+    return { cat, cells, bonus, rate: sched ? Math.round((done / sched) * 100) : null };
   });
 
   return (
@@ -1156,7 +1230,7 @@ function Review({ data, setData, today }) {
             </tr>
           </thead>
           <tbody>
-            {rows.filter((r) => r.cells.some((c) => c !== "none")).map(({ cat, cells, rate }) => (
+            {rows.filter((r) => r.cells.some((c) => c !== "none")).map(({ cat, cells, rate, bonus }) => (
               <tr key={cat} style={{ borderTop: `1px solid ${C.line}` }}>
                 <td style={{ padding: "8px 10px", whiteSpace: "nowrap", fontWeight: 600 }}>{cat}</td>
                 {cells.map((c, i) => (
@@ -1166,15 +1240,16 @@ function Review({ data, setData, today }) {
                       : <span style={{ display: "inline-block", verticalAlign: "middle" }}><Mark v={c} size={20} /></span>}
                   </td>
                 ))}
-                <td style={{ textAlign: "center", fontVariantNumeric: "tabular-nums", borderLeft: `1px solid ${C.line}`, fontWeight: 700, color: rate !== null && rate > 100 ? "#B8860B" : rate !== null && rate < 50 ? C.warn : C.ink }}>
-                  {rate === null ? "–" : `${rate}%`}
+                <td style={{ textAlign: "center", fontVariantNumeric: "tabular-nums", borderLeft: `1px solid ${C.line}`, fontWeight: 700, color: rate !== null && rate < 50 ? C.warn : C.ink }}>
+                  {rate === null ? (bonus ? "" : "–") : `${rate}%`}
+                  {bonus > 0 && <div style={{ fontSize: 11, color: "#B8860B", whiteSpace: "nowrap" }}>超標 +{bonus}</div>}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <p style={{ fontSize: 13, color: C.pencil, marginTop: 8 }}>虛線圈：當天只完成一部分；→：改到其他天；休假不計入完成率；額外完成算超標，完成率可超過 100%</p>
+      <p style={{ fontSize: 13, color: C.pencil, marginTop: 8 }}>虛線圈：當天只完成一部分；→：改到其他天；金色＋：額外完成。休假不計入完成率；完成率最高 100%，額外完成另計為「超標 +次數」。</p>
 
       <div style={{ marginTop: 20, display: "grid", gap: 16 }}>
         {[["good", "這週順利的"], ["stuck", "卡住或常漏的"], ["adjust", "下週要調整什麼"]].map(([k, t]) => (
@@ -1191,17 +1266,6 @@ function Review({ data, setData, today }) {
         {reviewDirty && <p style={{ fontSize: 13, color: C.pencil }}>有尚未儲存的內容。</p>}
       </div>
 
-      <Backup data={data} setData={setData} today={today} />
-      {currentBuild() && <p style={{ fontSize: 12, color: C.pencil, marginTop: 20 }}>版本 {currentBuild()}</p>}
-      <div style={{ marginTop: 32, borderTop: `1px solid ${C.line}`, paddingTop: 14 }}>
-        <button onClick={() => {
-            if (confirmReset) { setData((d) => ({ ...d, start: today, records: {}, reviews: {}, planHistory: [{ from: today, habits: currentHabits(d) }] })); setConfirmReset(false); }
-            else setConfirmReset(true);
-          }}
-          style={{ fontSize: 13, color: C.warn, textDecoration: "underline" }}>
-          {confirmReset ? "再按一次確認清除所有打卡與回顧紀錄" : "清除所有打卡與回顧紀錄"}
-        </button>
-      </div>
     </div>
   );
 }
@@ -1390,7 +1454,9 @@ function Main() {
     return () => { alive = false; clearTimeout(timer); };
   }, [data, retry]);
 
-  const tabs = [["today", "今天"], ["plan", "行程"], ["review", "回顧"], ["body", "身型"]];
+  const tabs = [["today", "今天"], ["review", "回顧"], ["body", "身型"]];
+  const [lastTab, setLastTab] = useState("today");
+  const openSettings = () => { if (tab !== "settings") { setLastTab(tab); setTab("settings"); } };
 
   return (
     <div style={{ minHeight: "100vh", background: C.paper, color: C.ink, fontFamily: '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif' }}>
@@ -1411,8 +1477,21 @@ function Main() {
             <button onClick={() => setRetry((n) => n + 1)} style={{ fontSize: 13, color: C.warn, fontWeight: 700, minHeight: 36, textDecoration: "underline" }}>儲存失敗，重試</button>
           )}
           {save.state === "unavailable" && <span style={{ fontSize: 13, color: C.warn, fontWeight: 700 }}>未連接儲存</span>}
+          <button onClick={openSettings} aria-label="設定" aria-pressed={tab === "settings"}
+            style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 10, color: tab === "settings" ? C.green : C.ink }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
         </header>
 
+        {tab === "settings" ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 12 }}>
+            <button onClick={() => setTab(lastTab)} style={{ minHeight: 44, padding: "0 8px 0 0", fontSize: 16, fontWeight: 700, color: C.green }}>‹ 返回</button>
+            <h2 style={{ fontSize: 20, fontWeight: 700 }}>設定</h2>
+          </div>
+        ) : (
         <nav style={{ display: "flex", marginTop: 16, border: `1.5px solid ${C.ink}`, borderRadius: 8, overflow: "hidden" }}>
           {tabs.map(([k, t]) => (
             <button key={k} onClick={() => setTab(k)} aria-pressed={tab === k}
@@ -1421,6 +1500,7 @@ function Main() {
             </button>
           ))}
         </nav>
+        )}
 
 
         {newVersion && (
@@ -1432,13 +1512,13 @@ function Main() {
         {(save.state === "error" || save.state === "unavailable") && (
           <div role="alert" style={{ marginTop: 12, padding: "10px 14px", borderRadius: 10, background: "#FBEDE6", color: C.warn, fontSize: 13, lineHeight: 1.6 }}>
             {save.state === "unavailable"
-              ? "目前的執行環境沒有提供儲存功能，紀錄只會保留到關閉 App 為止。請到「回顧」頁底部用「匯出備份」保存資料。"
-              : `這次沒有存成功${save.why ? `（${save.why}）` : ""}。可以按右上角重試；如果一直失敗，請到「回顧」頁底部匯出備份。`}
+              ? "目前的執行環境沒有提供儲存功能，紀錄只會保留到關閉 App 為止。請到右上角「設定」頁底部用「資料備份」保存資料。"
+              : `這次沒有存成功${save.why ? `（${save.why}）` : ""}。可以按右上角重試；如果一直失敗，請到右上角「設定」頁底部匯出備份。`}
           </div>
         )}
         {!data ? <p style={{ marginTop: 40, textAlign: "center", color: C.pencil }}>載入紀錄中…</p>
           : tab === "today" ? <Today data={data} setData={setData} today={today} onReview={() => setTab("review")} onBody={() => setTab("body")} />
-          : tab === "plan" ? <Plan data={data} setData={setData} today={today} />
+          : tab === "settings" ? <Settings data={data} setData={setData} today={today} />
           : tab === "body" ? <Body data={data} setData={setData} today={today} />
           : <Review data={data} setData={setData} today={today} />}
       </div>
